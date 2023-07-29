@@ -35,33 +35,130 @@ using Dates
 # ╔═╡ ac7f5679-3f4e-4fdb-80bf-b7353d2d1255
 using Statistics
 
-# ╔═╡ 58535d67-d97b-48cd-b4e4-95ccfd1a8b3e
+# ╔═╡ 203051cc-5af2-42be-8789-cbca1338f590
 using gh_cli_jll
 
-# ╔═╡ 42bbb0ed-e84e-48a6-8c19-50df6b6920b5
-md"## Comparing an individual package against the General registry"
+# ╔═╡ 10d91dab-2802-49fe-91c5-2b6e4f8f100e
+using Printf
 
-# ╔═╡ c1cd517c-4d36-4fde-8a5f-f8b51da1971a
+# ╔═╡ f13eecf1-8969-4042-9ed8-ba3d3ef61fc7
+md"## Analyzing a manifest"
+
+# ╔═╡ b7a367b9-4252-458e-a131-ad95117743d5
+m = DataFrame(analyze_manifest("assets/fixed_manifest.toml"; auth=PackageAnalyzer.GitHub.AnonymousAuth()))
+
+# ╔═╡ 2b2389dc-630c-4a2c-a593-c24765aded38
 md"""
-As a developer or user of a package, we might want to know how the package has changed over time. 
-
-We could look at plots of statistics of our package over time, but it can be even more informative to see how a package has evolved in the context of all the other packages in General.
-
-Here we present a small tool where you can enter the name of a package, and draw the date slider to see some simple statistics about the package (counts of lines of code, divided into several categories) against a backdrop histogram showing the same counts from the latest versions of all packages in General at that date.
-
+* `analyze_manifest` analyzes each package present in the `Manifest.toml` file
+* The exact version of each package specified there is analyzed (even if the package is added by URL or branch, or is a `dev` dependency)
+* Note: by default, PackageAnalyzer catches exceptions generated while analyzing packages. This could result in source code counts to be off, if for some reason some file could not be analyzed. This can be disabled by setting `PackageAnalyzer.CATCH_EXCEPTIONS[] = false`.
 """
 
-# ╔═╡ 04fdc396-b52d-43be-a907-553747f75f01
-@bind name confirm(TextField(; default="NOMAD"))
+# ╔═╡ 364ed836-91dd-4adf-b53c-9c212655c0e3
+md"""
+Let's say we want to know for three things:
 
-# ╔═╡ fbcb2020-bf1e-4289-9a2a-8857a0bcb40f
-md"This demo was presented at JuliaCon 2023 as part of this talk: <https://pretalx.com/juliacon2023/talk/BTUFJX/>."
+1. Does every (transitive) dependency have a permissive license?
+2. Is any (transitive) dependency severely undertested?
+3. How does the test/source code ratio of these packages compare to General as a whole?
+"""
+
+# ╔═╡ d1a70a97-3113-4fd7-ac1e-9462d192f61b
+md"## Does every (transitive) dependency have a permissive license?"
+
+# ╔═╡ 1f26b930-ba84-4bc0-bcb4-9e2740414b8e
+md"""
+We want to check if each dependency has a permissive license. We will start with only allowing MIT, BSD-2-Clause, and Apache-2.0 licenses. Here we refer to licenses by their SPDX identifier, which is what PackageAnalyzer reports (via `licensecheck`).
+"""
+
+# ╔═╡ 5f46928b-06e8-4836-8030-9504c62dbb7d
+allowed_licenses = ["MIT", "BSD-2-Clause", "Apache-2.0"]
+
+# ╔═╡ 606461d4-8b66-4df3-b001-d70ce1ca5072
+begin
+	function check_licences(license_table, allowed_licenses)
+		df = DataFrame(license_table)
+		transform!(df,
+			:licenses_found => ByRow(names -> issubset(names, allowed_licenses)) => :all_allowed,
+			:licenses_found => ByRow(names -> any(in(allowed_licenses), names)) => :some_allowed)
+		# Most-OK:
+		# * every license file has at least 90% identified
+		# * every license found in every license file is part of the allowed set
+		if all(>=(0.9), df.license_file_percent_covered) && all(df.all_allowed) && !isempty(df)
+			return "🟢"
+		# Second level: ignoring coverage, at least one file has an identified
+		# license in allowed set
+		elseif any(df.some_allowed)
+			return "🟡"
+		# Third level: no license has an identified license in the allowed set
+		else
+			return "🔴"
+		end
+	end
+
+	# Helper
+	check_licences(allowed_licenses) = license_table -> check_licences(license_table, allowed_licenses)
+end
+
+# ╔═╡ 6e800169-5217-4b34-bee0-45a97c6a76b9
+manifest_licences = transform(m, :license_files => ByRow(check_licences(allowed_licenses)) => :license_status)
+
+# ╔═╡ 0785f510-2412-4b04-bff5-4cd53e4e0590
+combine(groupby(manifest_licences, [:license_status]), nrow => :count)
+
+# ╔═╡ 3c155f34-0179-4017-be3e-f6e7adab6e90
+select(subset(manifest_licences, :license_status => ByRow(==("🔴"))), :name, :version, :license_files)
+
+# ╔═╡ 809ac558-c399-48e4-bb0b-839cb7a0fad8
+trunk = analyze("SimpleBufferStream"; version=:dev)
+
+# ╔═╡ 141a1b57-093b-4888-b46e-6d78e6450929
+trunk.license_files
+
+# ╔═╡ a398fed1-9ef8-4dab-8ade-3725d67ff98f
+select(subset(manifest_licences, :license_status => ByRow(==("🟡"))), :name, :version, :license_files)
+
+# ╔═╡ 8624eefb-3252-4665-9326-1e0d0592eda5
+plot_utils_dir, _ = PackageAnalyzer.obtain_code(find_package("PlotUtils"; version=v"1.3.5"))
+
+# ╔═╡ 0087d3fa-af22-4323-ae94-22c1a11064bf
+println(read(joinpath(plot_utils_dir, "LICENSE.md"), String))
+
+# ╔═╡ db4dc0df-1637-43e6-a54d-2bb88e1e36f0
+md"""
+## Is any dependency severely undertested?
+
+We will approach this by looking for packages with either under $(@bind n_test_lines_cutoff Scrubbable(1:1000; default=10)) lines of tests, or those for which
+
+	lines_of_tests / (lines_of_tests + lines_of_src)
+
+is less than the $(@bind percentile_cutoff Scrubbable(1:100; default=5))th percentile of this quantity over packages in General with at least $(n_test_lines_cutoff) lines of tests.
+"""
+
+# ╔═╡ c8370f27-c251-4aaa-8102-80f4113643aa
+md"""
+We can see there are 9 packages with low test coverage. Let us look into them more.
+"""
+
+# ╔═╡ 0920c063-424b-4259-9c7e-cc03e5c41eb1
+md"""What is going on with "Invalid Project.toml"? To check which package that is, let us inspect the repo, subdir, and version."""
+
+# ╔═╡ ea72c641-e41d-4c15-a8a7-da7d50254d0c
+md"Indeed, v0.4.0 of SignedDistanceFields.jl doesn't have a Project.toml! Similarly for ColorBrewer.jl. These releases have Require files, from a much older version of Julia's package registry.
+
+ColorBrewer has only 6 lines of tests, but it is a tiny package with only 14 lines of source code, so it seems OK."
+
+# ╔═╡ 11d99ed2-5c4a-4769-a72f-38bc442517f8
+md"We could similarly investigate the other packages with low test coverage to see if they are a problem for our application or not."
+
+# ╔═╡ fabfc0bb-d8e4-40dc-a3b5-daa0883c3c8c
+md"## How does the test/source code ratio of these packages compare to General as a whole?"
 
 # ╔═╡ 9f0ea012-c19a-41e9-82c5-0070b6270e95
 md"## Appendix: Setup & Code"
 
-# ╔═╡ fca63b12-9c98-4a87-9683-f21e9ce98f20
-md"### Loading packages"
+# ╔═╡ 9f98bc32-5a06-48b7-8c00-94e092665964
+format_percent(val) = @sprintf("%.0f", val*100)*"%"
 
 # ╔═╡ 0969d7c7-c71d-4368-bb22-186a9c88d530
 import AlgebraOfGraphics as AoG
@@ -71,45 +168,33 @@ begin
 	using CairoMakie
 	CairoMakie.activate!(type = "svg")
 
-	AoG.set_aog_theme!() 
-	update_theme!(; Axis = (; 
+	AoG.set_aog_theme!()
+	update_theme!(; Axis = (;
 		titlealign=:left,
 	    xgridvisible=true,
         ygridvisible=true)
 	)
 end
 
-# ╔═╡ 609ba70b-adcd-44c4-8921-a82fea1fd20b
-md"### Loading the data"
+# ╔═╡ 7e7b3676-d23b-42e8-acfa-c8da921b92f6
+plot_cdf!(ax, v; rev=false, kwargs...) = lines!(ax, sort(v; rev), (1:length(v))./(length(v)); kwargs...)
 
-# ╔═╡ 2ba9fe34-fec9-4b9c-892a-53d58fcefb57
+# ╔═╡ 7abfaeca-ea24-4e9d-82df-8b276555fcf3
 begin
 	dir = get_scratch!(PackageAnalyzer, "PackageAnalyzerJuliaCon2023")
 	isempty(readdir(dir)) && run(`$(gh()) release download -R ericphanson/PackageAnalyzerJuliaCon2023 2023-July-29-assets --dir $dir`)
 end
 
-# ╔═╡ d05d56de-d54e-428d-9a3d-28bcea8af393
-# Load versions table
-# This tells us which package versions existed at which dates.
-# Here we have 1 row per package per date (for the dates that that package existed).
-# The actual analysis results from these package versions is
-# in the `all_packages` table below.
-begin
-	versions = DataFrame(Arrow.Table("$dir/historical_versions-20230707T101220.arrow"); copycols=true)
-	# Drop last entry, since the month is incomplete
-	subset!(versions, :date => ByRow(<(Date(2023, 08, 01))))
-end
+# ╔═╡ d327ad7e-7b04-4bca-b10e-01921801bde9
+percent_format = values -> ["$(value)%" for value in values]
 
-# ╔═╡ 1191250f-af55-4c3e-b247-754b1504e04f
-# This powers the dates slider shown above
-all_dates = sort(unique(versions.date))
+# ╔═╡ 8834a122-1ae7-4dde-a5b1-21bff307f212
+img(name) = PlutoUI.LocalResource(joinpath(dirname(split(@__FILE__, '#')[1]) * "/assets", "$name.png"))
 
-# ╔═╡ c19f6a55-bb90-4a8a-967d-7782bb0dc0c4
-@bind analysis_date PlutoUI.Slider(all_dates; show_value=true, default=last(all_dates))
+# ╔═╡ d83b47ba-e11d-48a2-969b-f3a7684c88da
+img("SignedDistanceFields")
 
 # ╔═╡ c4767245-5886-4e76-a12e-b24e989b6572
-# These tend to be large autogenerated files checked into docs directories.
-# Therefore we exclude them in our counts of lines of documentation.
 rm_langs = (:TOML, :SVG, :CSS, :Javascript)
 
 # ╔═╡ a20e4881-ecd3-4df0-b2bb-ae487752642f
@@ -127,12 +212,13 @@ function sum_docstrings(table)
                if x.directory in ("src",); init=0)
 end
 
-# ╔═╡ 1b20614e-0f74-46c6-aa7d-e29c57c1001f
-# Load the analysis results for each analyzed version.
-# Here we have 1 row per package per version.
+# ╔═╡ 9acf960d-c95f-4eb6-bbb8-aba0031b077b
 begin
+	versions = DataFrame(Arrow.Table("$dir/historical_versions-20230707T101220.arrow"); copycols=true)
+	subset!(versions, :date => ByRow(<(Date(2023, 08, 01))))
+
 	all_packages = DataFrame(Legolas.read("$dir/20230707T101220-packages.arrow"); copycols=true)
-	
+
 	transform!(all_packages,
                 :lines_of_code => ByRow(PackageAnalyzer.sum_readme_lines) => :lines_of_readme,
                 :lines_of_code => ByRow(t -> PackageAnalyzer.sum_julia_loc(t, "src")) => :lines_of_julia_src_code,
@@ -152,174 +238,186 @@ begin
 		files -> any(f -> any(is_osi_approved, f.licenses_found), files)
 	) => :has_osi_approved_license,
 	[:lines_of_docs, :lines_of_readme] => ByRow(+) => :lines_of_docs_plus_readme)
-	
+
 end
 
+# ╔═╡ 1191250f-af55-4c3e-b247-754b1504e04f
+all_dates = sort(unique(versions.date))
+
 # ╔═╡ 2b4bdb6a-0ee9-432d-99c8-be339ed10a61
-# Join together our two tables to obtain `versions_with_data`:
-# one row per package per date, with columns relevant for our analysis.
 begin
+
 	loc_cols = [:lines_of_julia_src_code, :lines_of_julia_test_code, :lines_of_docs_plus_readme, :lines_of_docstrings]
 	cols = select(all_packages, [:repo, :subdir, :version, :runtests, :has_osi_approved_license, :any_CI, :is_subdir, :test_fraction_of_src_plus_test, loc_cols...])
 	versions_with_data = innerjoin(versions, cols; on=[:repo, :subdir, :version])
 end
 
-# ╔═╡ 29cfa71a-2abc-4f66-89c6-add7ba9d67e6
-md"Create lookups:"
+# ╔═╡ c8398b80-97e2-49dc-83ae-5987a55f52c2
+versions_by_date = groupby(versions_with_data, :date);
 
-# ╔═╡ d33bcb04-2402-4c82-a3b1-3dad5aab2eb5
+# ╔═╡ d2ee6924-ca9e-4a86-9eca-ee396fb64ecd
+general = last(versions_by_date);
+
+# ╔═╡ 81e65875-4598-4314-a1f9-5b8ce20b2db6
+test_ratio_cutoff = quantile(subset(general, :lines_of_julia_test_code => ByRow(>=(n_test_lines_cutoff))).test_fraction_of_src_plus_test, percentile_cutoff/100)
+
+# ╔═╡ 29bf9b71-3ede-4fc4-a066-d0f42a90cdf1
+begin
+	manifest_test = transform(m,
+		:lines_of_code => ByRow(t -> PackageAnalyzer.sum_julia_loc(t, "src")) => :lines_of_julia_src_code,
+		:lines_of_code => ByRow(t -> PackageAnalyzer.sum_julia_loc(t, "test")) => :lines_of_julia_test_code)
+
+	transform!(manifest_test,
+		[:lines_of_julia_src_code, :lines_of_julia_test_code] => ByRow((src, test) -> test/(src + test)) => :test_fraction_of_src_plus_test)
+
+	transform!(manifest_test,
+		[:lines_of_julia_test_code, :test_fraction_of_src_plus_test] => ByRow((test, f) -> test < n_test_lines_cutoff || f < test_ratio_cutoff) => :low_test_coverage)
+
+	transform!(manifest_test, :name => ByRow(endswith("jll")) => :is_jll)
+
+	# JLLs are an auto-generated wrapper, which don't have tests
+	subset!(manifest_test, :is_jll => ByRow(!))
+end
+
+# ╔═╡ 0c5b8c09-769c-4ec2-81ef-e0e6052bc378
+combine(groupby(manifest_test, :low_test_coverage), nrow => :count)
+
+# ╔═╡ 927984d6-82df-4288-97b7-8fc04b73227b
+select(subset(manifest_test, :low_test_coverage), :name, :subdir, :runtests, :lines_of_julia_src_code, :lines_of_julia_test_code, :test_fraction_of_src_plus_test)
+
+# ╔═╡ 6dc7971c-70e2-44c5-8949-43d6136c7f9c
+select(subset(manifest_test, :name => ByRow(==("Invalid Project.toml"))), :repo, :subdir, :version)
+
+# ╔═╡ 97c3cce5-0f54-4502-950c-767febeaef9c
 versions_by_name = groupby(versions_with_data, :name);
 
-# ╔═╡ 305b9db2-184d-4ea1-a79e-d08f9a8dcb95
-# Here, we assemble our timeline.
-let
-	# First, select the part of the table that corresponds to our package
-	# of interest. Here we have one row per date.
-	df = versions_by_name[(; name)]
+# ╔═╡ 3431f8d2-f317-42d8-a149-3ec0b16f31ae
+# based on the code in `tooltip.jl` in Makie src
+# took a looong time to get working...
+function textbox!(ax, text; position, offset=(0,0), kw...)
+	scene = ax.scene
+	px_pos = Makie.project(scene, Point2f(position))
 
-	# Now, we want to have a fun feature to display if an OSI license was
-	# added to the package at some point in time.
-	# We will detect this by analyzing the differences in the
-	# `has_osi_approved_license` column.
-	license_diffs = diff(df.has_osi_approved_license)
-	added_license = findall(==(1), license_diffs) .- 1
-	removed_license = findall(==(-1), license_diffs) .- 1
+	# First time to get the bounding box. Opacity 0 to not show it
+	t = text!(ax, px_pos; text, space=:pixel, color = (:white, 0.0), offset, kw...)
+	b = Rect2f(Makie.boundingbox(t))
 
-	# Next, detect at which dates a new version was found.
-	v = df.version
-	# This is a mask, providing indices at which the version has changed.
-	new_version = [true; [v[i] != v[i+1] for i in 1:(nrow(df)-1)]]
+	padding = (2, 2)
+	bb = Rect2f(Makie.origin(b) .+ offset .- padding, Makie.widths(b) .+ 2 .* padding)
 
-	# Let's grab the version numbers themselves, and the corresponding dates.
-	versions = v[new_version]
-	dates = df.date[new_version]
+	Makie.mesh!(t, bb; color=(:white, 1.0), strokewidth=1, space=:pixel)
 
-	# Now we start building our figure.
-	fig = Figure(; resolution=(800,200))
-	ax = Axis(fig[1,1]; title=name, titlealign=:left)
-	ys = fill(1.0, length(versions))
+	# Second time to draw on top of the white box we just made
+	text!(ax, px_pos; text, space=:pixel, offset, kw...)
+end
 
-	# We'll ask AlgebraOfGraphics to convert our dates to floating point
-	# numbers we can more easily plot.
-	# Here we make sure to use the `all_dates` vector rather than
-	# the dates corresponding to our particular package, so that the timeline
-	# is stable as the package of interest is changed.
-	xmin = AoG.datetime2float.(all_dates[1] - Month(1))
-	xmax = AoG.datetime2float.(all_dates[end] + Month(1))
-	xlims!(ax, xmin, xmax)
-	x_dates = Date(2020, 1,1):Year(1):Date(2023,1,1)
-	ax.xticks = datetimeticks(x_dates, string.(Dates.value.(Year.(x_dates))))
-	ax.xticksvisible = false
+# ╔═╡ a41b3555-bfdc-487d-900f-ad152d7ba349
+function rev_cdf_with_cutoff2!(ax, vals;
+		cutoffs = (0.1, 0.2, 0.3, 0.5),
+		y_offset = 0,
+		xscale=identity,
+		switch_to_below_ratio = 0.7,
+		mk_label = (cutoff, val) -> string(@sprintf("%.0f",val*100),"% of packages have ≥ ",  @sprintf("%.0f", cutoff*100), "% tests"),
+		color = Makie.wong_colors()[1],
+		marker_color = Makie.wong_colors()[2], kwargs...)
 
-	ylims!(ax, -1, 3)
-	hideydecorations!(ax)
-	hidespines!(ax)
+	ax.xscale=xscale
+	plot_cdf!(ax, vals; rev=true, linewidth=3, color, kwargs...)
+	x_max = ax.finallimits[].widths[1]
 
-	# We'll draw a horizontal line to make our "timeline"
-	hlines!(ax, 1; color=:black)
+	do_texts = function()
+		for cutoff in cutoffs
+			val =  mean(>=(cutoff), vals)
+			scatter!(ax, [Point2f(cutoff, val)], color = marker_color)
+			if xscale(cutoff) > switch_to_below_ratio * xscale(x_max)
+				align = (:left, :top)
+				yshift = y_offset
+			else
+				align = (:left, :bottom)
+				yshift = 0
+			end
 
-	# Now, let's plot the dates of interest
-	scatter!(ax, AoG.datetime2float.(dates), ys; color=:black)
-	# Add the text labels
-	text!(ax, AoG.datetime2float.(dates), fill(1.0, length(dates)); text=versions, rotation=π/3, offset=(0,5))
+			textbox!(ax, mk_label(cutoff, val); position= (cutoff, val),  fontsize=13, align, offset=(10,yshift))
 
-	# Plot a special little star if the package didn't have an OSI license
-	# before but one was added.
-	if !isempty(added_license)
-		xs_lic = AoG.datetime2float.(dates[added_license])
-		ys_lic =  fill(0.5, length(dates[added_license]))
-		scatter!(ax, xs_lic, ys_lic; color=:red, marker=:star5)
-
-		text!(ax, xs_lic, ys_lic; text="Added license", offset=(2,-5), align=(:left, :top))
+		end
 	end
-	# Mark the date at which we are currently looking
-	vlines!(ax, AoG.datetime2float(analysis_date); color=Makie.wong_colors()[2])
+	return do_texts
+end
+
+# ╔═╡ 6e996be9-905a-4b1f-90fa-3d7b698c6cca
+let
+	axis = (; xlabel = "has at least this percentage of tests",
+			ylabel = "this % of packages",
+			title = "",
+			ytickformat = v -> format_percent.(v),
+			yticks=LinearTicks(6), xticks=LinearTicks(6),
+			xgridvisible=false,
+			ygridvisible=false)
+
+	cutoffs = (0.1, 0.25, 0.5)
+	xscale=identity
+
+	fig = Figure()
+	ax = Axis(fig[1,1]; xscale, ytickformat=v -> format_percent.(v), axis...)
+
+	vlines!(ax, collect(cutoffs); color=:black, linestyle=:dash)
+
+	vals_general = general.test_fraction_of_src_plus_test
+	mk_label_general = (cutoff, val) -> string(@sprintf("%.0f",val*100),"% of packages in General have ≥ ",  @sprintf("%.0f", cutoff*100), "% tests")
+
+
+	do_texts_general = rev_cdf_with_cutoff2!(ax, vals_general;
+		cutoffs,
+		y_offset=-10,
+		xscale,
+		mk_label=mk_label_general,
+	switch_to_below_ratio=0.0)
+
+
+	vals_manifest = manifest_test.test_fraction_of_src_plus_test
+
+	mk_label_manifest = (cutoff, val) -> string(@sprintf("%.0f",val*100),"% of packages in manifest have ≥ ",  @sprintf("%.0f", cutoff*100), "% tests")
+
+	color = Makie.wong_colors()[3]
+	marker_color = Makie.wong_colors()[4]
+	do_texts_manifest = rev_cdf_with_cutoff2!(ax, vals_manifest;
+		cutoffs,
+		y_offset=0,
+		xscale,
+		mk_label=mk_label_manifest,
+	switch_to_below_ratio=0.7,
+	color, marker_color)
+
+
+	do_texts_general()
+	do_texts_manifest()
+	fig
+end
+
+# ╔═╡ a15b1106-3293-4bbd-841c-71cee57bcd8b
+function rev_cdf_with_cutoff2(vals; axis = NamedTuple(),
+		cutoffs = (0.1, 0.2, 0.3, 0.5),
+		xscale=identity,
+		y_offset = 0,
+		switch_to_below_ratio = 0.7,
+		mk_label = (cutoff, val) -> string(@sprintf("%.0f",val*100),"% of packages have ≥ ",  @sprintf("%.0f", cutoff*100), "% tests"))
+	fig = Figure()
+	ax = Axis(fig[1,1]; xscale, ytickformat=v -> format_percent.(v), axis...)
+
+	do_texts = rev_cdf_with_cutoff2!(ax, vals;
+		cutoffs,
+		y_offset,
+		xscale,
+		mk_label,
+	switch_to_below_ratio)
+
+	do_texts()
 
 	fig
 end
 
-# ╔═╡ 3b76741f-5a0a-4dcc-9249-72ec18f4573c
-versions_by_date = groupby(versions_with_data, :date);
-
-# ╔═╡ 598aa0fc-2100-446f-90d5-ab7176ecdd51
-versions_by_name_and_date = groupby(versions_with_data, [:name, :date]);
-
-# ╔═╡ 716973dd-d533-4180-adf1-54aca2c2de06
-md"Above, we allow the user to set the `name` and `analysis_date`.
-Here, we will set `df` to be the results from all packages on `analysis_date`,
-and `row` to be the particular package on that date."
-
-# ╔═╡ 75064e46-f545-4c75-847f-61db763c375c
-df = versions_by_date[(; date=analysis_date)];
-
-# ╔═╡ c0d481ac-8578-4ce4-88ec-7f991f7a76a5
-# Select appropriate row given name & date
-row = let
-	key = (; name, date=analysis_date)
-	only(get(versions_by_name_and_date, key, [NamedTuple()]))
-end;
-
-# ╔═╡ d5471e9e-4056-4c4b-9248-c617471afc95
-md"#### Plotting"
-
-# ╔═╡ 615f3c50-9b0b-4039-b592-cb14a0c5edaa
-function logrange(lo, hi; step=0.2)
-    lo = fld(log10(lo), step) * step
-    hi = cld(log10(hi), step) * step
-    return (exp10(x) for x in range(lo, hi; step))
-end
-
-# ╔═╡ 37c101a3-a9eb-4d18-b8c4-37cdc04c296b
-function logbins(v)
-    # Sturge's rule
-    # desired_n_bins = ceil(Int, log2(length(v))) + 1
-    desired_n_bins = log2(length(v)) + 1
-    m, M = extrema(v)
-    n_decades = log10(M) - log10(m)
-
-    # round it so we have an integer number of bins per decade
-    # (this should work for 1-10 bins per decade)
-    step = ceil(Int, (n_decades / desired_n_bins) * 10) / 10
-    return collect(logrange(m, M; step))
-end
-
-# ╔═╡ 90ab11e3-ff10-4d8c-bbf7-eac6f9929483
-function loghist!(ax, v)
-    h = hist!(ax, v; bins=logbins(v))
-    ax.xscale = log10
-    return h
-end
-
-# ╔═╡ db52c36e-4247-41e9-8a86-7462c12efff3
-# Let's select our colors
+# ╔═╡ 78665293-299f-4348-ad9d-13e5113a7e77
 base_color, alt_color = Makie.wong_colors()
-
-# ╔═╡ 4d2b3648-635f-46e0-b4e1-36b59cbc32c0
-function comparative_hist!(f, col; x_name)
-    ax = Axis(f; xlabel="Lines of $x_name", ylabel="Number of packages")
-    ax.limits = (0.5, 1.1e6, 0, 3000)
-
-    loghist!(ax, filter(>(0), df[:, col]))
-
-	if !isempty(row)
-    # Don't crash if the value is 0. `0.6` chosen empirically to look OK.
-    x = max(row[col], 0.6)
-    vlines!(x; color=alt_color)
-    text!(string(name, "\nv$(row.version)"); position=(x, 0), offset=(10, 5),
-          color=alt_color, align=(:left, :bottom))
-	end
-    return ax
-end
-
-# ╔═╡ 74e5f571-feee-416a-8306-8616a4db3fd5
-let
-    fig = Figure()
-    comparative_hist!(fig[1, 1], :lines_of_julia_src_code; x_name="Julia `src` code")
-    comparative_hist!(fig[1, 2], :lines_of_julia_test_code; x_name="Julia `test` code")
-    comparative_hist!(fig[2, 1], :lines_of_docs_plus_readme; x_name="Docs+README")
-    comparative_hist!(fig[2, 2], :lines_of_docstrings; x_name="Docstrings")
-    fig
-end
 
 # ╔═╡ 00000000-0000-0000-0000-000000000001
 PLUTO_PROJECT_TOML_CONTENTS = """
@@ -333,6 +431,7 @@ Legolas = "741b9549-f6ed-4911-9fbf-4a1c0c97f0cd"
 LicenseCheck = "726dbf0d-6eb6-41af-b36c-cd770e0f00cc"
 PackageAnalyzer = "e713c705-17e4-4cec-abe0-95bf5bf3e10c"
 PlutoUI = "7f904dfe-b85e-4ff6-b463-dae2292396a8"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 Scratch = "6c6a2e73-6563-6170-7368-637461726353"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 gh_cli_jll = "5d31d589-30fb-542f-b82d-10325e863e38"
@@ -356,7 +455,7 @@ PLUTO_MANIFEST_TOML_CONTENTS = """
 
 julia_version = "1.9.2"
 manifest_format = "2.0"
-project_hash = "8c07b3e5c43640260fa0f2a51ec4a1ffa64490f8"
+project_hash = "4de28d6cdac0390363fceb5f5f17e2e99fa9b07b"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -2254,15 +2353,39 @@ version = "3.5.0+0"
 """
 
 # ╔═╡ Cell order:
-# ╟─42bbb0ed-e84e-48a6-8c19-50df6b6920b5
-# ╟─c1cd517c-4d36-4fde-8a5f-f8b51da1971a
-# ╟─04fdc396-b52d-43be-a907-553747f75f01
-# ╟─c19f6a55-bb90-4a8a-967d-7782bb0dc0c4
-# ╟─305b9db2-184d-4ea1-a79e-d08f9a8dcb95
-# ╟─74e5f571-feee-416a-8306-8616a4db3fd5
-# ╟─fbcb2020-bf1e-4289-9a2a-8857a0bcb40f
-# ╟─9f0ea012-c19a-41e9-82c5-0070b6270e95
-# ╟─fca63b12-9c98-4a87-9683-f21e9ce98f20
+# ╟─f13eecf1-8969-4042-9ed8-ba3d3ef61fc7
+# ╠═b7a367b9-4252-458e-a131-ad95117743d5
+# ╟─2b2389dc-630c-4a2c-a593-c24765aded38
+# ╟─364ed836-91dd-4adf-b53c-9c212655c0e3
+# ╟─d1a70a97-3113-4fd7-ac1e-9462d192f61b
+# ╟─1f26b930-ba84-4bc0-bcb4-9e2740414b8e
+# ╠═5f46928b-06e8-4836-8030-9504c62dbb7d
+# ╠═606461d4-8b66-4df3-b001-d70ce1ca5072
+# ╠═6e800169-5217-4b34-bee0-45a97c6a76b9
+# ╠═0785f510-2412-4b04-bff5-4cd53e4e0590
+# ╠═3c155f34-0179-4017-be3e-f6e7adab6e90
+# ╠═809ac558-c399-48e4-bb0b-839cb7a0fad8
+# ╠═141a1b57-093b-4888-b46e-6d78e6450929
+# ╠═a398fed1-9ef8-4dab-8ade-3725d67ff98f
+# ╠═8624eefb-3252-4665-9326-1e0d0592eda5
+# ╠═0087d3fa-af22-4323-ae94-22c1a11064bf
+# ╟─db4dc0df-1637-43e6-a54d-2bb88e1e36f0
+# ╠═d2ee6924-ca9e-4a86-9eca-ee396fb64ecd
+# ╠═81e65875-4598-4314-a1f9-5b8ce20b2db6
+# ╠═29bf9b71-3ede-4fc4-a066-d0f42a90cdf1
+# ╠═0c5b8c09-769c-4ec2-81ef-e0e6052bc378
+# ╟─c8370f27-c251-4aaa-8102-80f4113643aa
+# ╠═927984d6-82df-4288-97b7-8fc04b73227b
+# ╠═0920c063-424b-4259-9c7e-cc03e5c41eb1
+# ╠═6dc7971c-70e2-44c5-8949-43d6136c7f9c
+# ╟─ea72c641-e41d-4c15-a8a7-da7d50254d0c
+# ╟─d83b47ba-e11d-48a2-969b-f3a7684c88da
+# ╟─11d99ed2-5c4a-4769-a72f-38bc442517f8
+# ╟─fabfc0bb-d8e4-40dc-a3b5-daa0883c3c8c
+# ╟─6e996be9-905a-4b1f-90fa-3d7b698c6cca
+# ╠═9f0ea012-c19a-41e9-82c5-0070b6270e95
+# ╠═9f98bc32-5a06-48b7-8c00-94e092665964
+# ╠═7e7b3676-d23b-42e8-acfa-c8da921b92f6
 # ╠═10d3c125-979a-4a41-b820-2218ab0e02eb
 # ╠═1b22be81-fa7c-4538-9bb8-a248f86a6169
 # ╠═e922319c-2603-45d3-8ccf-9c825b03efb9
@@ -2272,28 +2395,22 @@ version = "3.5.0+0"
 # ╠═651a32db-eddd-43a7-b4d7-b66783d62064
 # ╠═775a355c-086d-4281-8f1b-0660cab9f908
 # ╠═ac7f5679-3f4e-4fdb-80bf-b7353d2d1255
-# ╠═58535d67-d97b-48cd-b4e4-95ccfd1a8b3e
-# ╟─609ba70b-adcd-44c4-8921-a82fea1fd20b
-# ╠═2ba9fe34-fec9-4b9c-892a-53d58fcefb57
-# ╠═d05d56de-d54e-428d-9a3d-28bcea8af393
+# ╠═203051cc-5af2-42be-8789-cbca1338f590
+# ╠═7abfaeca-ea24-4e9d-82df-8b276555fcf3
+# ╠═d327ad7e-7b04-4bca-b10e-01921801bde9
+# ╠═8834a122-1ae7-4dde-a5b1-21bff307f212
+# ╠═c8398b80-97e2-49dc-83ae-5987a55f52c2
+# ╠═97c3cce5-0f54-4502-950c-767febeaef9c
 # ╠═1191250f-af55-4c3e-b247-754b1504e04f
+# ╠═9acf960d-c95f-4eb6-bbb8-aba0031b077b
+# ╠═2b4bdb6a-0ee9-432d-99c8-be339ed10a61
 # ╠═c4767245-5886-4e76-a12e-b24e989b6572
 # ╠═a20e4881-ecd3-4df0-b2bb-ae487752642f
+# ╠═10d91dab-2802-49fe-91c5-2b6e4f8f100e
 # ╠═415bfc63-3c09-49ae-a1e0-51ce34300925
-# ╠═1b20614e-0f74-46c6-aa7d-e29c57c1001f
-# ╠═2b4bdb6a-0ee9-432d-99c8-be339ed10a61
-# ╟─29cfa71a-2abc-4f66-89c6-add7ba9d67e6
-# ╠═d33bcb04-2402-4c82-a3b1-3dad5aab2eb5
-# ╠═3b76741f-5a0a-4dcc-9249-72ec18f4573c
-# ╠═598aa0fc-2100-446f-90d5-ab7176ecdd51
-# ╟─716973dd-d533-4180-adf1-54aca2c2de06
-# ╠═75064e46-f545-4c75-847f-61db763c375c
-# ╠═c0d481ac-8578-4ce4-88ec-7f991f7a76a5
-# ╟─d5471e9e-4056-4c4b-9248-c617471afc95
-# ╠═615f3c50-9b0b-4039-b592-cb14a0c5edaa
-# ╠═37c101a3-a9eb-4d18-b8c4-37cdc04c296b
-# ╠═90ab11e3-ff10-4d8c-bbf7-eac6f9929483
-# ╠═db52c36e-4247-41e9-8a86-7462c12efff3
-# ╠═4d2b3648-635f-46e0-b4e1-36b59cbc32c0
+# ╠═a41b3555-bfdc-487d-900f-ad152d7ba349
+# ╠═3431f8d2-f317-42d8-a149-3ec0b16f31ae
+# ╠═a15b1106-3293-4bbd-841c-71cee57bcd8b
+# ╠═78665293-299f-4348-ad9d-13e5113a7e77
 # ╟─00000000-0000-0000-0000-000000000001
 # ╟─00000000-0000-0000-0000-000000000002
