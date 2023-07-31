@@ -85,7 +85,23 @@ md"### Loading the data"
 # ╔═╡ 2ba9fe34-fec9-4b9c-892a-53d58fcefb57
 begin
 	dir = get_scratch!(PackageAnalyzer, "PackageAnalyzerJuliaCon2023")
-	isempty(readdir(dir)) && run(`$(gh()) release download -R ericphanson/PackageAnalyzerJuliaCon2023 2023-July-29-assets --dir $dir`)
+	if isempty(readdir(dir))
+		# First try to download from github release
+		# (this doesn't require local files, but may require github access)
+		downloaded = success(`$(gh()) release download -R ericphanson/PackageAnalyzerJuliaCon2023 2023-July-29-assets --dir $dir`)
+		# if that did not exist, try looking for `assets` in the directory
+		# in which the notebook is
+		if !downloaded
+			assets = joinpath(dirname(@__FILE__), "assets")
+			if isdir(assets) && !isempty(readdir(assets))
+				cp(assets, dir; force=true)
+			end
+		end
+	end
+
+	if !isdir(dir) || isempty(readdir(dir))
+		error("The data assets could not be located!")
+	end
 end
 
 # ╔═╡ d05d56de-d54e-428d-9a3d-28bcea8af393
