@@ -10,7 +10,7 @@ Here there are two notebooks:
 To run these [Pluto.jl notebooks](https://plutojl.org/):
 
 1. Clone this repository (`git clone https://github.com/ericphanson/PackageAnalyzerJuliaCon2023`)
-2. Start Julia in this repository (I used Julia 1.9.2) with `julia --project`
+2. Start Julia in this repository (I used Julia 1.9.2) with `julia --project`, and instantiate the manifest (`pkg> instantiate` or `using Pkg; Pkg.instantiate()`)
 3. Start the Pluto server: `using Pluto; Pluto.run()`
 4. Select the notebook of interest (either `compare_to_general.jl` or `analyze_manifest.jl`)
 
